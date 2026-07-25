@@ -1,0 +1,12 @@
+version: "3.8"
+
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    # This automatically pulls your Upstash Redis URL from your Next.js .env file
+    env_file:
+      - .env
+    # Ensures the worker restarts automatically if it ever crashes
+    restart: always
