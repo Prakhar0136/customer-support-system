@@ -1,14 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { TicketSchema } from "@/lib/validations";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
-import { supabase } from "@/lib/db/supabase";
+import { supportQueue } from "@/lib/queue/config";
 
 export async function POST(request: NextRequest) {
     try {
-        // Parse request body
         const body = await request.json();
 
-        // Validate request
         const result = TicketSchema.safeParse(body);
 
         if (!result.success) {
@@ -95,14 +93,20 @@ export async function POST(request: NextRequest) {
             );
         }
 
+        // Fire-and-forget: enqueue the ticket for background processing
+        await supportQueue.add("process-ticket", {
+            ticketId: ticket.id,
+        });
+
         return NextResponse.json(
             {
                 success: true,
-                message: "Ticket created successfully.",
-                ticket,
+                message: "Ticket received and queued for processing.",
+                ticketId: ticket.id,
             },
-            { status: 201 }
+            { status: 200 }
         );
+
     } catch (error) {
         console.error(error);
 
