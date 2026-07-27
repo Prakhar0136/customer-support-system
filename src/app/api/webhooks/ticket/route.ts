@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { TicketSchema } from "@/lib/validations";
 import { supabaseAdmin } from "@/lib/db/supabase-admin";
-import { supportQueue } from "@/lib/queue/config";
+import { supportFlowProducer } from "@/lib/queue/config";
 
 export async function POST(request: NextRequest) {
     try {
@@ -92,10 +92,53 @@ export async function POST(request: NextRequest) {
                 { status: 500 }
             );
         }
+        // Fire-and-forget: enqueue the ticket workflow
+        await supportFlowProducer.add({
+            name: "Ticket_Workflow",
+            queueName: "SupportQueue",
+            data: {
+                ticketId: ticket.id,
+            },
 
-        // Fire-and-forget: enqueue the ticket for background processing
-        await supportQueue.add("process-ticket", {
-            ticketId: ticket.id,
+            children: [
+                {
+                    name: "Resolution",
+                    queueName: "SupportQueue",
+                    data: {
+                        ticketId: ticket.id,
+                    },
+
+                    children: [
+                        {
+                            name: "Agent",
+                            queueName: "SupportQueue",
+                            data: {
+                                ticketId: ticket.id,
+                            },
+
+                            children: [
+                                {
+                                    name: "Cache",
+                                    queueName: "SupportQueue",
+                                    data: {
+                                        ticketId: ticket.id,
+                                    },
+
+                                    children: [
+                                        {
+                                            name: "Triage",
+                                            queueName: "SupportQueue",
+                                            data: {
+                                                ticketId: ticket.id,
+                                            },
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
         });
 
         return NextResponse.json(
