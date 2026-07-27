@@ -4,62 +4,58 @@ import { Worker } from "bullmq";
 import { connection } from "../src/lib/redis/upstash";
 import { supabaseAdmin } from "../src/lib/db/supabase-admin";
 
+const sleep = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
+
 const worker = new Worker(
     "SupportQueue",
-
     async (job) => {
         console.log("=================================");
-        console.log("📨 New Job Received");
+        console.log(`📨 Processing: ${job.name}`);
         console.log(job.data);
 
-        const { ticketId } = job.data;
+        switch (job.name) {
+            case "Triage":
+                console.log("🔍 Triage...");
+                await sleep(2000);
+                console.log("✅ Triage Complete");
+                break;
 
-        // Fetch ticket
-        const { data: ticket, error } = await supabaseAdmin
-            .from("tickets")
-            .select("*")
-            .eq("id", ticketId)
-            .single();
+            case "Cache":
+                console.log("📦 Cache...");
+                await sleep(2000);
+                console.log("✅ Cache Complete");
+                break;
 
-        if (error || !ticket) {
-            console.error("Ticket not found");
-            throw error;
+            case "Agent":
+                console.log("🤖 Agent...");
+                await sleep(2000);
+                console.log("✅ Agent Complete");
+                break;
+
+            case "Resolution":
+                console.log("📝 Resolution...");
+                await sleep(2000);
+
+                await supabaseAdmin
+                    .from("tickets")
+                    .update({
+                        status: "resolved",
+                    })
+                    .eq("id", job.data.ticketId);
+
+                console.log("✅ Resolution Complete");
+                break;
+
+            case "Ticket_Workflow":
+                console.log("🎉 Workflow Finished");
+                break;
+
+            default:
+                console.log(`Unknown Job: ${job.name}`);
         }
 
-        console.log("Ticket Content:");
-        console.log(ticket.content);
-
-        console.log("🤖 Simulating AI...");
-
-        await new Promise((resolve) => setTimeout(resolve, 5000));
-
-        console.log("Updating ticket...");
-
-        await supabaseAdmin
-            .from("tickets")
-            .update({
-                status: "resolved",
-            })
-            .eq("id", ticketId);
-
-        console.log("✅ Ticket resolved");
         console.log("=================================");
     },
-
-    {
-        connection,
-    }
+    { connection }
 );
-
-worker.on("ready", () => {
-    console.log("🚀 Worker Ready");
-});
-
-worker.on("completed", (job) => {
-    console.log(`✅ Job ${job.id} completed`);
-});
-
-worker.on("failed", (job, err) => {
-    console.error(`❌ Job ${job?.id} failed`);
-    console.error(err);
-});
