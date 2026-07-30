@@ -1,8 +1,8 @@
 import "dotenv/config";
-
 import { Worker } from "bullmq";
 import Groq from "groq-sdk";
 
+import { processAgentRAGStep } from "./steps/03_rag";
 import { connection } from "../src/lib/redis/upstash";
 import { supabaseAdmin } from "../src/lib/db/supabase-admin";
 
@@ -32,10 +32,11 @@ const worker = new Worker(
                     throw new Error("Ticket not found.");
                 }
 
-                // Call Groq
+                // Call Groq with JSON Mode enabled
                 const completion = await groq.chat.completions.create({
                     model: "llama-3.3-70b-versatile",
                     temperature: 0,
+                    response_format: { type: "json_object" }, // <-- FORCES STRICT JSON MODE
                     messages: [
                         {
                             role: "system",
@@ -56,11 +57,15 @@ Schema:
                     ],
                 });
 
-                const response =
-                    completion.choices[0].message.content ?? "";
+                const rawResponse = completion.choices[0].message.content ?? "";
 
-                console.log("🤖 AI Response:");
-                console.log(response);
+                console.log("🤖 Raw AI Response:", rawResponse);
+
+                // Strip markdown code blocks (```json ... ```) if the model added them
+                const cleanedResponse = rawResponse
+                    .replace(/```json/g, "")
+                    .replace(/```/g, "")
+                    .trim();
 
                 let result: {
                     sentiment: "furious" | "neutral";
@@ -68,9 +73,9 @@ Schema:
                 };
 
                 try {
-                    result = JSON.parse(response);
+                    result = JSON.parse(cleanedResponse);
                 } catch {
-                    throw new Error("AI returned invalid JSON.");
+                    throw new Error(`AI returned invalid JSON. Raw string was: ${rawResponse}`);
                 }
 
                 console.log("Parsed Result:", result);
@@ -81,6 +86,7 @@ Schema:
                         .from("tickets")
                         .update({
                             status: "escalated",
+                            sentiment: result.sentiment,
                         })
                         .eq("id", job.data.ticketId);
 
@@ -91,40 +97,74 @@ Schema:
                     );
                 }
 
+                // Save sentiment for non-furious tickets
+                await supabaseAdmin
+                    .from("tickets")
+                    .update({
+                        sentiment: result.sentiment,
+                    })
+                    .eq("id", job.data.ticketId);
+
                 console.log("✅ Triage Complete");
                 break;
             }
 
-            case "Cache":
-                console.log("📦 Cache...");
-                await new Promise((resolve) => setTimeout(resolve, 2000));
-                console.log("✅ Cache Complete");
+            case "Cache": {
+                console.log("📦 Cache check...");
+                // Cache logic will be added here on Day 15
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+                console.log("✅ Cache Check Complete");
                 break;
+            }
 
-            case "Agent":
-                console.log("🤖 Agent...");
-                await new Promise((resolve) => setTimeout(resolve, 2000));
-                console.log("✅ Agent Complete");
-                break;
+            case "Agent": {
+                console.log("🤖 Running AI Agent (RAG Pipeline)...");
 
-            case "Resolution":
-                console.log("📝 Resolution...");
+                // 1. Fetch ticket content from Supabase
+                const { data: ticket, error } = await supabaseAdmin
+                    .from("tickets")
+                    .select("id, content")
+                    .eq("id", job.data.ticketId)
+                    .single();
 
-                await new Promise((resolve) => setTimeout(resolve, 2000));
+                if (error || !ticket) {
+                    throw new Error(`Ticket not found for ID: ${job.data.ticketId}`);
+                }
 
-                await supabaseAdmin
+                // 2. Run Day 11 RAG step (embeddings + pgvector similarity + Groq context generation)
+                const result = await processAgentRAGStep(ticket.id, ticket.content);
+
+                // 3. Save the generated draft back into Supabase for review
+                const { error: updateError } = await supabaseAdmin
                     .from("tickets")
                     .update({
-                        status: "resolved",
+                        agent_draft: result.aiDraft,
+                        status: "needs_review",
                     })
-                    .eq("id", job.data.ticketId);
+                    .eq("id", ticket.id);
 
+                if (updateError) {
+                    throw new Error(`Failed to save draft to Supabase: ${updateError.message}`);
+                }
+
+                console.log("✅ Agent RAG Step Complete & Draft Saved");
+                break;
+            }
+
+            case "Resolution": {
+                console.log("📝 Resolution...");
+
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+
+                // Optional auto-resolve logic depending on workflow state
                 console.log("✅ Resolution Complete");
                 break;
+            }
 
-            case "Ticket_Workflow":
+            case "Ticket_Workflow": {
                 console.log("🎉 Workflow Finished");
                 break;
+            }
 
             default:
                 console.log(`Unknown Job: ${job.name}`);
