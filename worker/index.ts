@@ -2,7 +2,7 @@ import "dotenv/config";
 import { Worker } from "bullmq";
 import Groq from "groq-sdk";
 
-import { processAgentRAGStep } from "./steps/03_rag";
+import { processAgentWithTools } from "./steps/03_rag";
 import { connection } from "../src/lib/redis/upstash";
 import { supabaseAdmin } from "../src/lib/db/supabase-admin";
 
@@ -118,12 +118,12 @@ Schema:
             }
 
             case "Agent": {
-                console.log("🤖 Running AI Agent (RAG Pipeline)...");
+                console.log("🤖 Running AI Agent...");
 
-                // 1. Fetch ticket content from Supabase
+                // Fetch ticket content AND customer email
                 const { data: ticket, error } = await supabaseAdmin
                     .from("tickets")
-                    .select("id, content")
+                    .select("id, content, customers(email)")
                     .eq("id", job.data.ticketId)
                     .single();
 
@@ -131,23 +131,22 @@ Schema:
                     throw new Error(`Ticket not found for ID: ${job.data.ticketId}`);
                 }
 
-                // 2. Run Day 11 RAG step (embeddings + pgvector similarity + Groq context generation)
-                const result = await processAgentRAGStep(ticket.id, ticket.content);
+                const customers = ticket.customers as any;
+                const customerEmail = (Array.isArray(customers) ? customers[0]?.email : customers?.email) || "unknown";
 
-                // 3. Save the generated draft back into Supabase for review
-                const { error: updateError } = await supabaseAdmin
+                // Run the Tool Calling Agent
+                const aiDraft = await processAgentWithTools(ticket.id, ticket.content, customerEmail);
+
+                // Save the generated draft back into Supabase
+                await supabaseAdmin
                     .from("tickets")
                     .update({
-                        agent_draft: result.aiDraft,
+                        agent_draft: aiDraft,
                         status: "needs_review",
                     })
                     .eq("id", ticket.id);
 
-                if (updateError) {
-                    throw new Error(`Failed to save draft to Supabase: ${updateError.message}`);
-                }
-
-                console.log("✅ Agent RAG Step Complete & Draft Saved");
+                console.log("✅ Agent Step Complete & Draft Saved");
                 break;
             }
 
