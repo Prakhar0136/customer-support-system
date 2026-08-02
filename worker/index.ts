@@ -3,6 +3,7 @@ import { Worker } from "bullmq";
 import Groq from "groq-sdk";
 
 import { processAgentWithTools } from "./steps/03_rag";
+import { evaluateDraft } from "./steps/05_evaluator";
 import { connection } from "../src/lib/redis/upstash";
 import { supabaseAdmin } from "../src/lib/db/supabase-admin";
 
@@ -120,7 +121,7 @@ Schema:
             case "Agent": {
                 console.log("🤖 Running AI Agent...");
 
-                // Fetch ticket content AND customer email
+                // 1. Fetch ticket content AND customer email
                 const { data: ticket, error } = await supabaseAdmin
                     .from("tickets")
                     .select("id, content, customers(email)")
@@ -134,19 +135,32 @@ Schema:
                 const customers = ticket.customers as any;
                 const customerEmail = (Array.isArray(customers) ? customers[0]?.email : customers?.email) || "unknown";
 
-                // Run the Tool Calling Agent
+                // 2. Run the Tool Calling Agent
                 const aiDraft = await processAgentWithTools(ticket.id, ticket.content, customerEmail);
 
-                // Save the generated draft back into Supabase
-                await supabaseAdmin
+                // 3. Evaluate the generated draft (Day 13 QA Gate)
+                const evaluation = await evaluateDraft(ticket.content, aiDraft ?? "");
+                console.log(`📊 Confidence Score: ${evaluation.confidence} | Reason: ${evaluation.reasoning}`);
+
+                // 4. Determine status based on confidence threshold (85% required for auto-resolve)
+                const AUTO_RESOLVE_THRESHOLD = 0.85;
+                const finalStatus = evaluation.confidence >= AUTO_RESOLVE_THRESHOLD ? "resolved" : "needs_review";
+
+                // 5. Save draft, confidence score, and status to Supabase
+                const { error: updateError } = await supabaseAdmin
                     .from("tickets")
                     .update({
                         agent_draft: aiDraft,
-                        status: "needs_review",
+                        confidence: evaluation.confidence,
+                        status: finalStatus,
                     })
                     .eq("id", ticket.id);
 
-                console.log("✅ Agent Step Complete & Draft Saved");
+                if (updateError) {
+                    throw new Error(`Failed to save draft to Supabase: ${updateError.message}`);
+                }
+
+                console.log(`✅ Agent Step Complete & Saved with status: '${finalStatus}'`);
                 break;
             }
 
